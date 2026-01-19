@@ -1,7 +1,7 @@
 name: Analyze Go Repos
 
 on:
-  workflow_dispatch:  # manual trigger
+  workflow_dispatch:
 
 jobs:
   analyze:
@@ -25,11 +25,11 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Go eLOC/COSMIC FP Analysis
-        run: |
-          python go_cosmic_eloc.py
+        run: python go_cosmic_eloc.py
 
       - name: Upload results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: go-eloc-fp-results
-          path: results/go_eloc_fp.json
+          path: results/go_eloc_fp.csv
+
