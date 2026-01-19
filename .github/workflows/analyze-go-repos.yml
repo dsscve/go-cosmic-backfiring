@@ -36,6 +36,10 @@ jobs:
           tar -xzf tokei.tar.gz
           sudo mv tokei /usr/local/bin/
           tokei --version
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
 
       - name: Run Go eLOC/COSMIC FP Analysis
         run: python go_cosmic_eloc_tokei.py
