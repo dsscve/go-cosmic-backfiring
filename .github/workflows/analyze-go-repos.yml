@@ -1,4 +1,4 @@
-name: Analyze Go Repos
+name: Analyze Go Repos with Tokei
 
 on:
   workflow_dispatch:
@@ -19,16 +19,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies (latest versions)
+      - name: Install dependencies (Python)
         run: |
           python -m pip install --upgrade pip
           pip install PyGithub rich
 
+      - name: Install Tokei
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tokei
+
       - name: Run Go eLOC/COSMIC FP Analysis
-        run: python go_cosmic_eloc.py
+        run: python go_cosmic_eloc_tokei.py
 
       - name: Upload results CSV
         uses: actions/upload-artifact@v4
         with:
           name: go-eloc-fp-results
           path: results/go_eloc_fp.csv
+
