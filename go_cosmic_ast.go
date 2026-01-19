@@ -29,67 +29,80 @@ func callName(call *ast.CallExpr) string {
 	return ""
 }
 
-func isEntryNode(n ast.Node) bool {
-	switch x := n.(type) {
+// ---------------- ENTRY ----------------
 
-	// HTTP handlers: http.HandleFunc(...)
-	case *ast.CallExpr:
-		name := callName(x)
-		if strings.Contains(name, "HandleFunc") ||
-			strings.Contains(name, "ListenAndServe") ||
-			strings.Contains(name, "Run") { // Gin/Fiber/Echo
-			return true
-		}
+func isEntry(n ast.Node) bool {
+	switch x := n.(type) {
 
 	// main()
 	case *ast.FuncDecl:
 		if x.Name.Name == "main" {
 			return true
 		}
+
+	// http.HandleFunc, router.Handle, mux.HandleFunc
+	case *ast.CallExpr:
+		name := callName(x)
+		if strings.Contains(name, "Handle") ||
+			strings.Contains(name, "ListenAndServe") ||
+			strings.Contains(name, "Run") ||
+			strings.Contains(name, "Serve") {
+			return true
+		}
 	}
 	return false
 }
 
-func isReadCall(name string) bool {
-	readCalls := []string{
-		"Read", "ReadAll", "Open", "Get",
+// ---------------- READ ----------------
+
+func isRead(name string) bool {
+	readHints := []string{
+		"Open", "Read", "ReadAll",
+		"Get", "Do",
 		"Query", "QueryRow",
 		"Scan",
 		"Decode",
-		"Find", "First", // ORM
+		"Find", "First",
+		"Args", "Env",
 	}
-	for _, c := range readCalls {
-		if strings.Contains(name, c) {
+	for _, h := range readHints {
+		if strings.Contains(name, h) {
 			return true
 		}
 	}
 	return false
 }
 
-func isWriteCall(name string) bool {
-	writeCalls := []string{
-		"Write", "Create", "Post",
+// ---------------- WRITE ----------------
+
+func isWrite(name string) bool {
+	writeHints := []string{
+		"Write", "Create",
+		"Post", "Put",
 		"Exec",
 		"Encode",
-		"Save", "Update", // ORM
+		"Save", "Update",
 		"Printf", "Fprintf",
 	}
-	for _, c := range writeCalls {
-		if strings.Contains(name, c) {
+	for _, h := range writeHints {
+		if strings.Contains(name, h) {
 			return true
 		}
 	}
 	return false
 }
 
-func isExitCall(name string) bool {
-	exitCalls := []string{
+// ---------------- EXIT ----------------
+
+func isExit(name string) bool {
+	exitHints := []string{
 		"Write", "Print", "Fatal",
 		"Exit",
 		"Respond", "Send",
+		"ServeHTTP",
 	}
-	for _, c := range exitCalls {
-		if strings.Contains(name, c) {
+	for _, h := range exitHints {
+		if strings.Contains(name, h) {
 			return true
 		}
 	}
@@ -109,6 +122,11 @@ func main() {
 			return nil
 		}
 
+		// Ignore test files
+		if strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return nil
@@ -116,20 +134,20 @@ func main() {
 
 		ast.Inspect(file, func(n ast.Node) bool {
 
-			if isEntryNode(n) {
+			if isEntry(n) {
 				result.Entries++
 			}
 
 			if call, ok := n.(*ast.CallExpr); ok {
 				name := callName(call)
 
-				if isReadCall(name) {
+				if isRead(name) {
 					result.Reads++
 				}
-				if isWriteCall(name) {
+				if isWrite(name) {
 					result.Writes++
 				}
-				if isExitCall(name) {
+				if isExit(name) {
 					result.Exits++
 				}
 			}
@@ -142,3 +160,4 @@ func main() {
 
 	json.NewEncoder(os.Stdout).Encode(result)
 }
+
