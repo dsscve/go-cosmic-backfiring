@@ -1,24 +1,27 @@
 import os
 import csv
-import subprocess
 import json
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from github import Github
+from github import Github, Auth
 from rich.progress import Progress
 
 # ---------------- CONFIGURATION ----------------
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TOP_N = 50
-MAX_WORKERS = 6
+MAX_WORKERS = 8
 BASE_DIR = "data/go_repos"
 RESULTS_FILE = "results/go_eloc_fp.csv"
-GO_AST_BIN = "./go_cosmic_ast"
+AST_BINARY = "./go_cosmic_ast"
 
 # ---------------- FETCH TOP REPOS ----------------
 def fetch_top_go_repos(top_n=TOP_N):
     if not GITHUB_TOKEN:
         raise Exception("Set GITHUB_TOKEN environment variable")
-    g = Github(GITHUB_TOKEN)
+
+    auth = Auth.Token(GITHUB_TOKEN)
+    g = Github(auth=auth)
+
     query = "language:Go stars:>1000"
     result = g.search_repositories(query=query, sort="stars", order="desc")
 
@@ -45,7 +48,7 @@ def clone_repo(repo):
             ["git", "clone", "--depth", "1", repo["clone_url"], repo_path],
             check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
         )
         return repo_path
     except Exception as e:
@@ -65,58 +68,203 @@ def clone_repos_parallel(repos):
                 progress.update(task, advance=1)
     return paths
 
-# ---------------- ANALYSIS ----------------
-def count_tokei_eloc(repo_path):
+# ---------------- BUILD GO AST ANALYZER ----------------
+def build_ast_analyzer():
+    if os.path.exists(AST_BINARY):
+        return
+
+    print("🔨 Building Go AST analyzer...")
+
+    go_source = r'''
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type Result struct {
+	Entries int `json:"entries"`
+	Exits   int `json:"exits"`
+	Reads   int `json:"reads"`
+	Writes  int `json:"writes"`
+}
+
+var (
+	entryFuncs = []string{
+		"http.HandleFunc",
+		"ListenAndServe",
+		"Run",
+		"Serve",
+	}
+
+	readFuncs = []string{
+		"os.Open",
+		"os.ReadFile",
+		"Read",
+		"Query",
+		"Scan",
+	}
+
+	writeFuncs = []string{
+		"os.Create",
+		"os.WriteFile",
+		"Write",
+		"Print",
+		"Printf",
+		"Encode",
+		"Respond",
+	}
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println(`{"entries":0,"exits":0,"reads":0,"writes":0}`)
+		return
+	}
+
+	root := os.Args[1]
+	fset := token.NewFileSet()
+	result := Result{}
+
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		node, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return nil
+		}
+
+		ast.Inspect(node, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			name := getCallName(call.Fun)
+
+			for _, f := range entryFuncs {
+				if strings.Contains(name, f) {
+					result.Entries++
+				}
+			}
+
+			for _, f := range readFuncs {
+				if strings.Contains(name, f) {
+					result.Reads++
+				}
+			}
+
+			for _, f := range writeFuncs {
+				if strings.Contains(name, f) {
+					result.Writes++
+				}
+			}
+
+			if strings.Contains(name, "os.Exit") {
+				result.Exits++
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	out, _ := json.Marshal(result)
+	fmt.Println(string(out))
+}
+
+func getCallName(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.SelectorExpr:
+		return getCallName(e.X) + "." + e.Sel.Name
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
+}
+'''
+
+    with open("go_cosmic_ast.go", "w", encoding="utf-8") as f:
+        f.write(go_source)
+
+    subprocess.run(["go", "build", "-o", "go_cosmic_ast", "go_cosmic_ast.go"], check=True)
+
+# ---------------- TOKEI ELOC ----------------
+def get_eloc_with_tokei(repo_path):
     try:
-        result = subprocess.run(
-            ["tokei", repo_path, "--type", "Go", "--output", "json"],
-            capture_output=True, text=True, check=True
-        )
-        data = json.loads(result.stdout)
-        return data.get("Go", {}).get("code", 0)
+        output = subprocess.check_output(
+            ["tokei", "--output", "json", repo_path],
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8")
+
+        data = json.loads(output)
+        go_data = data.get("Go")
+        if not go_data:
+            return 0
+
+        return go_data["code"]
     except Exception as e:
-        print(f"[WARN] Tokei failed for {repo_path}: {e}")
+        print(f"[WARN] Tokei failed on {repo_path}: {e}")
         return 0
 
-def count_cosmic_fp_ast(repo_path):
+# ---------------- RUN AST ANALYZER ----------------
+def run_ast_analyzer(repo_path):
     try:
-        result = subprocess.run(
-            [GO_AST_BIN, repo_path],
-            capture_output=True, text=True, check=True
-        )
-        data = json.loads(result.stdout)
-        entries = data.get("Entries", 0)
-        exits = data.get("Exits", 0)
-        reads = data.get("Reads", 0)
-        writes = data.get("Writes", 0)
-        total_fp = entries + exits + reads + writes
-        return entries, exits, reads, writes, total_fp
-    except Exception as e:
-        print(f"[WARN] AST FP failed for {repo_path}: {e}")
-        return 0, 0, 0, 0, 0
+        output = subprocess.check_output(
+            [AST_BINARY, repo_path],
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8")
 
+        data = json.loads(output)
+        return (
+            data.get("entries", 0),
+            data.get("exits", 0),
+            data.get("reads", 0),
+            data.get("writes", 0),
+        )
+    except Exception as e:
+        print(f"[WARN] AST failed on {repo_path}: {e}")
+        return 0, 0, 0, 0
+
+# ---------------- ANALYSIS ----------------
 def analyze_repo(repo_path):
-    total_loc = count_tokei_eloc(repo_path)
-    e, x, r, w, fp = count_cosmic_fp_ast(repo_path)
-    eloc_per_fp = total_loc / fp if fp else 0
+    eloc = get_eloc_with_tokei(repo_path)
+    entries, exits, reads, writes = run_ast_analyzer(repo_path)
+
+    total_fp = entries + exits + reads + writes
+    eloc_per_fp = eloc / total_fp if total_fp else 0
 
     return {
         "repo": os.path.basename(repo_path),
-        "total_loc": total_loc,
-        "entries": e,
-        "exits": x,
-        "reads": r,
-        "writes": w,
-        "cosmic_fp": fp,
-        "eloc_per_fp": eloc_per_fp
+        "total_loc": eloc,
+        "entries": entries,
+        "exits": exits,
+        "reads": reads,
+        "writes": writes,
+        "cosmic_fp": total_fp,
+        "eloc_per_fp": round(eloc_per_fp, 2),
     }
 
 def analyze_repos_parallel(repo_paths):
     results = []
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(analyze_repo, p): p for p in repo_paths}
+
         with Progress() as progress:
             task = progress.add_task("[green]Analyzing repos...", total=len(futures))
+
             for f in as_completed(futures):
                 result = f.result()
                 results.append(result)
@@ -125,9 +273,14 @@ def analyze_repos_parallel(repo_paths):
     os.makedirs("results", exist_ok=True)
 
     fieldnames = [
-        "repo", "total_loc",
-        "entries", "exits", "reads", "writes",
-        "cosmic_fp", "eloc_per_fp"
+        "repo",
+        "total_loc",
+        "entries",
+        "exits",
+        "reads",
+        "writes",
+        "cosmic_fp",
+        "eloc_per_fp",
     ]
 
     with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as csvfile:
@@ -148,20 +301,18 @@ def main():
     repo_paths = clone_repos_parallel(repos)
     print(f"Cloned {len(repo_paths)} repositories.")
 
-    print("🔨 Building Go AST analyzer...")
-    subprocess.run(
-        ["go", "build", "-o", GO_AST_BIN, "go_cosmic_ast.go"],
-        check=True
-    )
+    build_ast_analyzer()
 
     print("📊 Analyzing repositories...")
     results = analyze_repos_parallel(repo_paths)
+
     print(f"✅ Analysis complete! Results saved to {RESULTS_FILE}")
 
     valid = [r["eloc_per_fp"] for r in results if r["eloc_per_fp"] > 0]
+
     if valid:
         avg = sum(valid) / len(valid)
-        print(f"\n💡 Average eLOC/FP across {len(valid)} Go repos: {avg:.2f}")
+        print(f"\n💡 Average eLOC/FP across {len(valid)} repos: {avg:.2f}")
     else:
         print("\n⚠️ No valid COSMIC FP found.")
 
