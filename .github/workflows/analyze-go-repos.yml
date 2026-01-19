@@ -56,7 +56,7 @@ jobs:
 
       - name: Run Go eLOC/COSMIC FP Analysis
         # updated to run the new Python script that builds/uses the SSA + pointer analyzer
-        run: python analyze_repos.py
+        run: go_cosmic_eloc_tokei.py
 
       - name: Upload results CSV
         uses: actions/upload-artifact@v4
