@@ -11,10 +11,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TOP_N = 50
 MAX_WORKERS = 8
 BASE_DIR = "data/go_repos"
-RESULTS_FILE = "results/go_eloc_fp.csv"  # <-- CSV output
+RESULTS_FILE = "results/go_eloc_fp.csv"
 
 # ---------------- COSMIC HEURISTIC ----------------
-COMMENT_PATTERN = re.compile(r'^\s*//|^\s*/\*|^\s*\*/|^\s*\*')
 DATA_MOVEMENT_KEYWORDS = {
     "entry": ["func", "interface"],
     "exit": ["return"],
@@ -69,17 +68,23 @@ def clone_repos_parallel(repos):
     return paths
 
 # ---------------- ANALYSIS ----------------
-def count_effective_loc(file_path):
-    loc = 0
+def count_tokei_eloc(repo_path):
+    """
+    Use Tokei to get effective lines of code for Go files.
+    Returns total eLOC.
+    """
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if line and not COMMENT_PATTERN.match(line):
-                    loc += 1
+        result = subprocess.run(
+            ["tokei", repo_path, "--type", "Go", "--output", "json"],
+            capture_output=True, text=True, check=True
+        )
+        import json
+        data = json.loads(result.stdout)
+        # eLOC is counted under "code"
+        return data.get("Go", {}).get("code", 0)
     except Exception as e:
-        print(f"[WARN] Reading {file_path}: {e}")
-    return loc
+        print(f"[WARN] Tokei failed for {repo_path}: {e}")
+        return 0
 
 def count_cosmic_fp(file_path):
     entries = exits = reads = writes = 0
@@ -101,20 +106,22 @@ def count_cosmic_fp(file_path):
     return entries, exits, reads, writes, total_fp
 
 def analyze_repo(repo_path):
-    total_loc = total_entries = total_exits = total_reads = total_writes = total_fp = 0
+    total_entries = total_exits = total_reads = total_writes = total_fp = 0
+    # Walk all .go files for FP
     for root, dirs, files in os.walk(repo_path):
         for file in files:
             if file.endswith(".go"):
                 file_path = os.path.join(root, file)
-                loc = count_effective_loc(file_path)
                 e, x, r, w, fp = count_cosmic_fp(file_path)
-                total_loc += loc
                 total_entries += e
                 total_exits += x
                 total_reads += r
                 total_writes += w
                 total_fp += fp
+
+    total_loc = count_tokei_eloc(repo_path)
     eloc_per_fp = total_loc / total_fp if total_fp else 0
+
     return {
         "repo": os.path.basename(repo_path),
         "total_loc": total_loc,
@@ -173,3 +180,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
