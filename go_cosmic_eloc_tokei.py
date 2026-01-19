@@ -1,7 +1,7 @@
 import os
-import re
 import csv
 import subprocess
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from github import Github
 from rich.progress import Progress
@@ -69,18 +69,13 @@ def clone_repos_parallel(repos):
 
 # ---------------- ANALYSIS ----------------
 def count_tokei_eloc(repo_path):
-    """
-    Use Tokei to get effective lines of code for Go files.
-    Returns total eLOC.
-    """
+    """Run tokei and return Go code lines (eLOC)."""
     try:
         result = subprocess.run(
             ["tokei", repo_path, "--type", "Go", "--output", "json"],
             capture_output=True, text=True, check=True
         )
-        import json
         data = json.loads(result.stdout)
-        # eLOC is counted under "code"
         return data.get("Go", {}).get("code", 0)
     except Exception as e:
         print(f"[WARN] Tokei failed for {repo_path}: {e}")
@@ -89,17 +84,17 @@ def count_tokei_eloc(repo_path):
 def count_cosmic_fp(file_path):
     entries = exits = reads = writes = 0
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 l = line.strip()
-                for keyword in DATA_MOVEMENT_KEYWORDS["entry"]:
-                    if keyword in l: entries += 1
-                for keyword in DATA_MOVEMENT_KEYWORDS["exit"]:
-                    if keyword in l: exits += 1
-                for keyword in DATA_MOVEMENT_KEYWORDS["read"]:
-                    if keyword in l: reads += 1
-                for keyword in DATA_MOVEMENT_KEYWORDS["write"]:
-                    if keyword in l: writes += 1
+                for k in DATA_MOVEMENT_KEYWORDS["entry"]:
+                    if k in l: entries += 1
+                for k in DATA_MOVEMENT_KEYWORDS["exit"]:
+                    if k in l: exits += 1
+                for k in DATA_MOVEMENT_KEYWORDS["read"]:
+                    if k in l: reads += 1
+                for k in DATA_MOVEMENT_KEYWORDS["write"]:
+                    if k in l: writes += 1
     except Exception as e:
         print(f"[WARN] FP analysis {file_path}: {e}")
     total_fp = entries + exits + reads + writes
@@ -107,8 +102,8 @@ def count_cosmic_fp(file_path):
 
 def analyze_repo(repo_path):
     total_entries = total_exits = total_reads = total_writes = total_fp = 0
-    # Walk all .go files for FP
-    for root, dirs, files in os.walk(repo_path):
+
+    for root, _, files in os.walk(repo_path):
         for file in files:
             if file.endswith(".go"):
                 file_path = os.path.join(root, file)
@@ -144,16 +139,15 @@ def analyze_repos_parallel(repo_paths):
                 results.append(result)
                 progress.update(task, advance=1)
 
-    # Ensure results folder exists
     os.makedirs("results", exist_ok=True)
 
-    # Write CSV
     fieldnames = ["repo", "total_loc", "entries", "exits", "reads", "writes", "cosmic_fp", "eloc_per_fp"]
     with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for r in results:
             writer.writerow(r)
+
     return results
 
 # ---------------- MAIN ----------------
@@ -162,7 +156,7 @@ def main():
     repos = fetch_top_go_repos(TOP_N)
     print(f"Found {len(repos)} repositories.")
 
-    print("📥 Cloning repositories (ephemeral in GitHub Actions)...")
+    print("📥 Cloning repositories...")
     repo_paths = clone_repos_parallel(repos)
     print(f"Cloned {len(repo_paths)} repositories.")
 
@@ -170,8 +164,7 @@ def main():
     results = analyze_repos_parallel(repo_paths)
     print(f"✅ Analysis complete! Results saved to {RESULTS_FILE}")
 
-    # Print average eLOC/FP
-    valid_eloc_fp = [r['eloc_per_fp'] for r in results if r['eloc_per_fp'] > 0]
+    valid_eloc_fp = [r["eloc_per_fp"] for r in results if r["eloc_per_fp"] > 0]
     if valid_eloc_fp:
         avg_eloc_fp = sum(valid_eloc_fp) / len(valid_eloc_fp)
         print(f"\n💡 Average eLOC/FP across {len(valid_eloc_fp)} Go repos: {avg_eloc_fp:.2f}")
