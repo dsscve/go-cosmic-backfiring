@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -17,102 +18,39 @@ type Result struct {
 	Writes  int `json:"writes"`
 }
 
-func callName(call *ast.CallExpr) string {
-	switch fun := call.Fun.(type) {
-	case *ast.SelectorExpr:
-		if ident, ok := fun.X.(*ast.Ident); ok {
-			return ident.Name + "." + fun.Sel.Name
-		}
-	case *ast.Ident:
-		return fun.Name
+var (
+	entryFuncs = []string{
+		"http.HandleFunc",
+		"ListenAndServe",
+		"Run",
+		"Serve",
 	}
-	return ""
-}
 
-// ---------------- ENTRY ----------------
-
-func isEntry(n ast.Node) bool {
-	switch x := n.(type) {
-
-	// main()
-	case *ast.FuncDecl:
-		if x.Name.Name == "main" {
-			return true
-		}
-
-	// http.HandleFunc, router.Handle, mux.HandleFunc
-	case *ast.CallExpr:
-		name := callName(x)
-		if strings.Contains(name, "Handle") ||
-			strings.Contains(name, "ListenAndServe") ||
-			strings.Contains(name, "Run") ||
-			strings.Contains(name, "Serve") {
-			return true
-		}
-	}
-	return false
-}
-
-// ---------------- READ ----------------
-
-func isRead(name string) bool {
-	readHints := []string{
-		"Open", "Read", "ReadAll",
-		"Get", "Do",
-		"Query", "QueryRow",
+	readFuncs = []string{
+		"os.Open",
+		"os.ReadFile",
+		"Read",
+		"Query",
 		"Scan",
-		"Decode",
-		"Find", "First",
-		"Args", "Env",
 	}
-	for _, h := range readHints {
-		if strings.Contains(name, h) {
-			return true
-		}
-	}
-	return false
-}
 
-// ---------------- WRITE ----------------
-
-func isWrite(name string) bool {
-	writeHints := []string{
-		"Write", "Create",
-		"Post", "Put",
-		"Exec",
+	writeFuncs = []string{
+		"os.Create",
+		"os.WriteFile",
+		"Write",
+		"Print",
+		"Printf",
 		"Encode",
-		"Save", "Update",
-		"Printf", "Fprintf",
+		"Respond",
 	}
-	for _, h := range writeHints {
-		if strings.Contains(name, h) {
-			return true
-		}
-	}
-	return false
-}
-
-// ---------------- EXIT ----------------
-
-func isExit(name string) bool {
-	exitHints := []string{
-		"Write", "Print", "Fatal",
-		"Exit",
-		"Respond", "Send",
-		"ServeHTTP",
-	}
-	for _, h := range exitHints {
-		if strings.Contains(name, h) {
-			return true
-		}
-	}
-	return false
-}
+)
 
 func main() {
 	if len(os.Args) < 2 {
-		os.Exit(1)
+		fmt.Println(`{"entries":0,"exits":0,"reads":0,"writes":0}`)
+		return
 	}
+
 	root := os.Args[1]
 	fset := token.NewFileSet()
 	result := Result{}
@@ -122,34 +60,40 @@ func main() {
 			return nil
 		}
 
-		// Ignore test files
-		if strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-
-		file, err := parser.ParseFile(fset, path, nil, 0)
+		node, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return nil
 		}
 
-		ast.Inspect(file, func(n ast.Node) bool {
-
-			if isEntry(n) {
-				result.Entries++
+		ast.Inspect(node, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
 			}
 
-			if call, ok := n.(*ast.CallExpr); ok {
-				name := callName(call)
+			name := getCallName(call.Fun)
 
-				if isRead(name) {
+			for _, f := range entryFuncs {
+				if strings.Contains(name, f) {
+					result.Entries++
+				}
+			}
+
+			for _, f := range readFuncs {
+				if strings.Contains(name, f) {
 					result.Reads++
 				}
-				if isWrite(name) {
+			}
+
+			for _, f := range writeFuncs {
+				if strings.Contains(name, f) {
 					result.Writes++
 				}
-				if isExit(name) {
-					result.Exits++
-				}
+			}
+
+			// EXIT heuristic: returns + os.Exit()
+			if strings.Contains(name, "os.Exit") {
+				result.Exits++
 			}
 
 			return true
@@ -158,6 +102,17 @@ func main() {
 		return nil
 	})
 
-	json.NewEncoder(os.Stdout).Encode(result)
+	out, _ := json.Marshal(result)
+	fmt.Println(string(out))
 }
 
+func getCallName(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.SelectorExpr:
+		return getCallName(e.X) + "." + e.Sel.Name
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
+}
