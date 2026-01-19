@@ -36,16 +36,31 @@ jobs:
           tar -xzf tokei.tar.gz
           sudo mv tokei /usr/local/bin/
           tokei --version
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
 
+      # Optional: install/prime Go module cache so building the analyzer is faster.
+      - name: Prepare Go modules cache (optional)
+        run: |
+          # Create a temporary module so `go build` invoked by the Python script can
+          # download dependencies (golang.org/x/tools...). This is safe in CI.
+          # Ignore failure if module already exists.
+          if [ ! -f go.mod ]; then
+            go mod init github.com/actions/go-cosmic-analyzer || true
+          fi
+          # Pre-fetch tooling dependencies used by the analyzer to reduce build time.
+          go get golang.org/x/tools@latest
+
       - name: Run Go eLOC/COSMIC FP Analysis
-        run: python go_cosmic_eloc_tokei.py
+        # updated to run the new Python script that builds/uses the SSA + pointer analyzer
+        run: python analyze_repos.py
 
       - name: Upload results CSV
         uses: actions/upload-artifact@v4
         with:
           name: go-eloc-fp-results
           path: results/go_eloc_fp.csv
+```
