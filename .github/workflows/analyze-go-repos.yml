@@ -19,17 +19,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies (latest versions)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install PyGithub rich
 
       - name: Run Go eLOC/COSMIC FP Analysis
         run: python go_cosmic_eloc.py
 
-      - name: Upload results
+      - name: Upload results CSV
         uses: actions/upload-artifact@v4
         with:
           name: go-eloc-fp-results
           path: results/go_eloc_fp.csv
-
