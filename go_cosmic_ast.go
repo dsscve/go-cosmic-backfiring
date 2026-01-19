@@ -17,11 +17,46 @@ type Result struct {
 	Writes  int `json:"writes"`
 }
 
+func callName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		if ident, ok := fun.X.(*ast.Ident); ok {
+			return ident.Name + "." + fun.Sel.Name
+		}
+	case *ast.Ident:
+		return fun.Name
+	}
+	return ""
+}
+
+func isEntryNode(n ast.Node) bool {
+	switch x := n.(type) {
+
+	// HTTP handlers: http.HandleFunc(...)
+	case *ast.CallExpr:
+		name := callName(x)
+		if strings.Contains(name, "HandleFunc") ||
+			strings.Contains(name, "ListenAndServe") ||
+			strings.Contains(name, "Run") { // Gin/Fiber/Echo
+			return true
+		}
+
+	// main()
+	case *ast.FuncDecl:
+		if x.Name.Name == "main" {
+			return true
+		}
+	}
+	return false
+}
+
 func isReadCall(name string) bool {
 	readCalls := []string{
-		"os.Open", "ioutil.ReadFile", "os.ReadFile",
-		"db.Query", "db.QueryRow",
-		"http.Get", "client.Do",
+		"Read", "ReadAll", "Open", "Get",
+		"Query", "QueryRow",
+		"Scan",
+		"Decode",
+		"Find", "First", // ORM
 	}
 	for _, c := range readCalls {
 		if strings.Contains(name, c) {
@@ -33,9 +68,11 @@ func isReadCall(name string) bool {
 
 func isWriteCall(name string) bool {
 	writeCalls := []string{
-		"os.Create", "ioutil.WriteFile", "os.WriteFile",
-		"db.Exec",
-		"http.Post", "client.Post",
+		"Write", "Create", "Post",
+		"Exec",
+		"Encode",
+		"Save", "Update", // ORM
+		"Printf", "Fprintf",
 	}
 	for _, c := range writeCalls {
 		if strings.Contains(name, c) {
@@ -47,23 +84,14 @@ func isWriteCall(name string) bool {
 
 func isExitCall(name string) bool {
 	exitCalls := []string{
-		"fmt.Println", "log.Println", "log.Fatal",
-		"os.Exit", "w.Write", "json.NewEncoder",
+		"Write", "Print", "Fatal",
+		"Exit",
+		"Respond", "Send",
 	}
 	for _, c := range exitCalls {
 		if strings.Contains(name, c) {
 			return true
 		}
-	}
-	return false
-}
-
-func isEntryFunc(fn *ast.FuncDecl) bool {
-	if fn.Name.Name == "main" {
-		return true
-	}
-	if fn.Recv == nil {
-		return false
 	}
 	return false
 }
@@ -74,7 +102,6 @@ func main() {
 	}
 	root := os.Args[1]
 	fset := token.NewFileSet()
-
 	result := Result{}
 
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -89,25 +116,12 @@ func main() {
 
 		ast.Inspect(file, func(n ast.Node) bool {
 
-			// Entry points
-			if fn, ok := n.(*ast.FuncDecl); ok {
-				if isEntryFunc(fn) {
-					result.Entries++
-				}
+			if isEntryNode(n) {
+				result.Entries++
 			}
 
-			// Function calls
 			if call, ok := n.(*ast.CallExpr); ok {
-				var name string
-
-				switch fun := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					if ident, ok := fun.X.(*ast.Ident); ok {
-						name = ident.Name + "." + fun.Sel.Name
-					}
-				case *ast.Ident:
-					name = fun.Name
-				}
+				name := callName(call)
 
 				if isReadCall(name) {
 					result.Reads++
