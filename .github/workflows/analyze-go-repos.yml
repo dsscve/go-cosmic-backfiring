@@ -1,0 +1,35 @@
+name: Analyze Go Repos
+
+on:
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Go eLOC/COSMIC FP Analysis
+        run: |
+          python go_cosmic_eloc.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v3
+        with:
+          name: go-eloc-fp-results
+          path: results/go_eloc_fp.json
